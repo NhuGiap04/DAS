@@ -120,6 +120,7 @@ def pipeline_using_smc_sdxl(
     reward_fn: Callable[Union[torch.Tensor, np.ndarray], float] = None,
     kl_coeff: float = 1.,
     verbose: bool = False, # True for debugging SMC procedure
+    show_intermediate_rewards: bool = False,
     **kwargs,
 ):
     # Handle deprecated callback parameters
@@ -437,6 +438,16 @@ def pipeline_using_smc_sdxl(
                     tmp_noise_pred, tmp_guidance = _pred_noise(tmp_latents, t)
                     noise_pred[batch_p*idx : batch_p*(idx+1)] = tmp_noise_pred.detach().clone()
                     guidance[batch_p*idx : batch_p*(idx+1)] = tmp_guidance.detach().clone()
+
+        if show_intermediate_rewards and (i >= start):
+            rewards_per_prompt = rewards.view(-1, num_particles).detach().to(torch.float32).cpu()
+            timestep_value = int(torch.as_tensor(t).item())
+            for prompt_idx, prompt_rewards in enumerate(rewards_per_prompt):
+                reward_values = ", ".join(f"{value:.6f}" for value in prompt_rewards.tolist())
+                print(
+                    f"[SMC-SDXL][intermediate_reward] step={i+1}/{num_inference_steps} "
+                    f"timestep={timestep_value} prompt={prompt_idx} particle_rewards=[{reward_values}]"
+                )
 
         if verbose:
             print("Expected rewards of proposals: ", rewards)

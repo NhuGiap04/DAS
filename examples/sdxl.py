@@ -47,6 +47,7 @@ image = pipeline_using_smc_sdxl(
     tempering_gamma=tempering_gamma,
     reward_fn=image_reward_fn,
     kl_coeff=kl_coeff,
+    show_intermediate_rewards=True,
 )[0]
 reward = image_reward_fn(image).item()
 image = (image[0].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)

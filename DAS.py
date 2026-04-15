@@ -86,6 +86,12 @@ class DAS(DiffusionModelSampler):
                     max_length=self.pipeline.tokenizer.model_max_length,
                 ).input_ids.to(self.accelerator.device)
                 prompt_embeds = self.pipeline.text_encoder(prompt_ids)[0]
+
+                smc_extra_kwargs = {}
+                if "xl" in self.config.pretrained.model:
+                    smc_extra_kwargs["show_intermediate_rewards"] = bool(
+                        getattr(self.config.smc, "show_intermediate_rewards", False)
+                    )
                 
                 # Sample images
                 with self.autocast():
@@ -111,7 +117,8 @@ class DAS(DiffusionModelSampler):
                         tempering_start=self.config.smc.tempering_start,
                         reward_fn=image_reward_fn,
                         kl_coeff=self.config.smc.kl_coeff,
-                        verbose=self.config.smc.verbose
+                        verbose=self.config.smc.verbose,
+                        **smc_extra_kwargs,
                     )
                 self.info_eval_vis["eval_ess"].append(ess_trace)
                 self.info_eval_vis["scale_factor_trace"].append(scale_factor_trace)
