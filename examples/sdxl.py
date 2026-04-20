@@ -15,14 +15,11 @@ import matplotlib.pyplot as plt
 prompt = "A close up of a handpalm with leaves growing from it."
 
 def main():
-        def slugify(text, max_len=60):
-            slug = re.sub(r'[^a-zA-Z0-9]+', '-', text.strip().lower())
-            slug = slug.strip('-')
-            return slug[:max_len].rstrip('-') or 'prompt'
+    def slugify(text, max_len=60):
+        slug = re.sub(r'[^a-zA-Z0-9]+', '-', text.strip().lower())
+        slug = slug.strip('-')
+        return slug[:max_len].rstrip('-') or 'prompt'
 
-        prompt_slug = slugify(prompt)
-        prompt_dir = os.path.join(output_dir, prompt_slug)
-        os.makedirs(prompt_dir, exist_ok=True)
     parser = argparse.ArgumentParser(description="Run SDXL example with a given prompt.")
     parser.add_argument('--prompt', type=str, required=True, help='Prompt for image generation')
     parser.add_argument('--log_json', type=str, default=None, help='Path to save intermediate rewards log as JSON')
@@ -42,6 +39,9 @@ def main():
     tempering_gamma = args.tempering_gamma
     output_dir = args.output_dir
     os.makedirs(output_dir, exist_ok=True)
+    prompt_slug = slugify(prompt)
+    prompt_dir = os.path.join(output_dir, prompt_slug)
+    os.makedirs(prompt_dir, exist_ok=True)
     repeated_prompts = [prompt] * batch_p
 
 
@@ -198,7 +198,10 @@ def main():
 
     # Save step logs as JSON if requested
     if args.log_json:
-        with open(os.path.join(prompt_dir, "intermediate_rewards.json"), 'w') as f:
+        log_json_parent = os.path.dirname(args.log_json)
+        if log_json_parent:
+            os.makedirs(log_json_parent, exist_ok=True)
+        with open(args.log_json, 'w') as f:
             json.dump(step_logs, f, indent=2)
 
     # Save image
