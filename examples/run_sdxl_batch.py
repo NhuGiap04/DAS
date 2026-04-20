@@ -39,9 +39,11 @@ def load_prompts(prompts_arg, prompts_file):
     ]
 
 def main():
+
     parser = argparse.ArgumentParser(description="Batch run SDXL for multiple prompts.")
     parser.add_argument('--prompts', nargs='+', help='List of prompts (overrides --prompts_file)')
-    parser.add_argument('--prompts_file', type=str, help='File with one prompt per line')
+    parser.add_argument('--prompts_file', type=str, help='File with one prompt per line or JSON list')
+    parser.add_argument('--max_prompts', type=int, default=None, help='Maximum number of prompts to run from the prompts file')
     parser.add_argument('--output_dir', type=str, default="logs/DAS_SDXL/pick/qualitative", help='Output directory')
     parser.add_argument('--n_steps', type=int, default=100)
     parser.add_argument('--num_particles', type=int, default=4)
@@ -51,8 +53,11 @@ def main():
     parser.add_argument('--script', type=str, default=None, help='Path to sdxl.py (default: examples/sdxl.py)')
     args = parser.parse_args()
 
+
     SCRIPT = args.script or os.path.join(os.path.dirname(__file__), "sdxl.py")
     PROMPTS = load_prompts(args.prompts, args.prompts_file)
+    if args.max_prompts is not None:
+        PROMPTS = PROMPTS[:args.max_prompts]
 
     console = Console()
     table = Table(show_header=True, header_style="bold magenta")
