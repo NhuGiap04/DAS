@@ -1,7 +1,3 @@
-
-def load_prompts(prompts_arg, prompts_file):
-
-# --- BEGIN NEW BATCH RUNNER ---
 import re
 import sys
 import time
