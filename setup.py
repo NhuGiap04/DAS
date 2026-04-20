@@ -21,6 +21,7 @@ setup(
         "transformers==4.48.2",
         "timm==1.0.14",
         "huggingface-hub==0.28.1",
+        "fairscale==0.4.13",
         "clip",
         "lpips",
         "wandb",
