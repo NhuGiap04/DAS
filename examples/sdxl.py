@@ -1,3 +1,4 @@
+import re
 from diffusers import DiffusionPipeline, StableDiffusionXLPipeline, DDIMScheduler
 from das.diffusers_patch.pipeline_using_SMC_SDXL import pipeline_using_smc_sdxl
 import torch
@@ -14,6 +15,14 @@ import matplotlib.pyplot as plt
 prompt = "A close up of a handpalm with leaves growing from it."
 
 def main():
+        def slugify(text, max_len=60):
+            slug = re.sub(r'[^a-zA-Z0-9]+', '-', text.strip().lower())
+            slug = slug.strip('-')
+            return slug[:max_len].rstrip('-') or 'prompt'
+
+        prompt_slug = slugify(prompt)
+        prompt_dir = os.path.join(output_dir, prompt_slug)
+        os.makedirs(prompt_dir, exist_ok=True)
     parser = argparse.ArgumentParser(description="Run SDXL example with a given prompt.")
     parser.add_argument('--prompt', type=str, required=True, help='Prompt for image generation')
     parser.add_argument('--log_json', type=str, default=None, help='Path to save intermediate rewards log as JSON')
@@ -153,10 +162,10 @@ def main():
 
 
     # Save traces as .npy
-    np.save(f"{output_dir}/image_reward_max_trace.npy", np.array(image_reward_max_trace))
-    np.save(f"{output_dir}/image_reward_mean_trace.npy", np.array(image_reward_mean_trace))
-    np.save(f"{output_dir}/pickscore_max_trace.npy", np.array(pickscore_max_trace))
-    np.save(f"{output_dir}/pickscore_mean_trace.npy", np.array(pickscore_mean_trace))
+    np.save(os.path.join(prompt_dir, "image_reward_max_trace.npy"), np.array(image_reward_max_trace))
+    np.save(os.path.join(prompt_dir, "image_reward_mean_trace.npy"), np.array(image_reward_mean_trace))
+    np.save(os.path.join(prompt_dir, "pickscore_max_trace.npy"), np.array(pickscore_max_trace))
+    np.save(os.path.join(prompt_dir, "pickscore_mean_trace.npy"), np.array(pickscore_mean_trace))
 
     # Plot and save separate reward traces
     # 1. ImageReward (after steer)
@@ -168,7 +177,7 @@ def main():
     plt.title('ImageReward (After Steer) at Each Timestep')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.5)
-    plot_path_after = f"{output_dir}/{prompt}_reward_trace_after.png"
+    plot_path_after = os.path.join(prompt_dir, "reward_trace_after.png")
     plt.tight_layout()
     plt.savefig(plot_path_after)
     plt.close()
@@ -182,20 +191,20 @@ def main():
     plt.title('PickScore (Before Steer) at Each Timestep')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.5)
-    plot_path_before = f"{output_dir}/{prompt}_reward_trace_before.png"
+    plot_path_before = os.path.join(prompt_dir, "reward_trace_before.png")
     plt.tight_layout()
     plt.savefig(plot_path_before)
     plt.close()
 
     # Save step logs as JSON if requested
     if args.log_json:
-        with open(args.log_json, 'w') as f:
+        with open(os.path.join(prompt_dir, "intermediate_rewards.json"), 'w') as f:
             json.dump(step_logs, f, indent=2)
 
     # Save image
     image_np = (image[0].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)
     image_pil = Image.fromarray(image_np)
-    image_filename = f"{output_dir}/{prompt} | PickScore: {steer_reward:.6f} | ImageReward: {final_image_reward:.6f}.png"
+    image_filename = os.path.join(prompt_dir, f"image_PickScore_{steer_reward:.6f}_ImageReward_{final_image_reward:.6f}.png")
     image_pil.save(image_filename)
 
     # Print only summary info
@@ -204,8 +213,7 @@ def main():
     print(f"PickScore: {steer_reward:.6f} | ImageReward: {final_image_reward:.6f}")
     print(f"Reward trace plot (after steer) saved to: {plot_path_after}")
     print(f"Reward trace plot (before steer) saved to: {plot_path_before}")
-    if args.log_json:
-        print(f"Intermediate rewards log saved to: {args.log_json}")
+    print(f"All outputs saved in: {prompt_dir}")
 
 
 if __name__ == "__main__":

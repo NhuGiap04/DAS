@@ -7,6 +7,7 @@ import csv
 import argparse
 import json
 import subprocess
+import shutil
 
 def _supports_color() -> bool:
     return sys.stdout.isatty()
@@ -94,10 +95,13 @@ def load_prompts(file_path: Path) -> List[str]:
     raise ValueError(f"Unsupported prompt file extension: {suffix}. Use .txt or .json")
 
 def _build_sdxl_cmd(args, prompt, run_output_dir):
+    # Passing --log_json forces examples/sdxl.py to persist per-step reward logs.
+    run_log_json = run_output_dir / "intermediate_rewards.json"
     cmd = [
         args.python,
         str(args.sdxl_script),
         "--prompt", prompt,
+        "--log_json", str(run_log_json),
         "--output_dir", str(run_output_dir),
         "--n_steps", str(args.n_steps),
         "--num_particles", str(args.num_particles),
@@ -106,6 +110,103 @@ def _build_sdxl_cmd(args, prompt, run_output_dir):
         "--tempering_gamma", str(args.tempering_gamma),
     ]
     return cmd
+
+def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, artifacts_root: Path) -> Dict[str, Any]:
+    run_artifacts_dir = artifacts_root / run_name
+    reward_dir = run_artifacts_dir / "reward_traces"
+    image_dir = run_artifacts_dir / "images"
+    reward_dir.mkdir(parents=True, exist_ok=True)
+    image_dir.mkdir(parents=True, exist_ok=True)
+
+    copied_files: Dict[str, Optional[str]] = {
+        "intermediate_rewards_json": None,
+        "image_reward_max_trace_npy": None,
+        "image_reward_mean_trace_npy": None,
+        "pickscore_max_trace_npy": None,
+        "pickscore_mean_trace_npy": None,
+        "reward_trace_after_png": None,
+        "reward_trace_before_png": None,
+        "final_image_png": None,
+        "eval_reward_trace_csv": None,
+        "steer_reward_trace_csv": None,
+    }
+    missing_files: List[str] = []
+
+    expected_reward_files = [
+        "intermediate_rewards.json",
+        "image_reward_max_trace.npy",
+        "image_reward_mean_trace.npy",
+        "pickscore_max_trace.npy",
+        "pickscore_mean_trace.npy",
+        "reward_trace_after.png",
+        "reward_trace_before.png",
+    ]
+    for filename in expected_reward_files:
+        matches = list(run_output_dir.rglob(filename))
+        if not matches:
+            missing_files.append(filename)
+            continue
+        src = max(matches, key=lambda p: p.stat().st_mtime)
+        dst = reward_dir / filename
+        shutil.copy2(src, dst)
+        key = (
+            "intermediate_rewards_json" if filename == "intermediate_rewards.json"
+            else f"{filename.replace('.', '_')}"
+        )
+        copied_files[key] = str(dst)
+
+    image_candidates = [
+        p for p in run_output_dir.rglob("*.png")
+        if p.name.startswith("image_")
+    ]
+    if image_candidates:
+        src = max(image_candidates, key=lambda p: p.stat().st_mtime)
+        dst = image_dir / src.name
+        shutil.copy2(src, dst)
+        copied_files["final_image_png"] = str(dst)
+    else:
+        missing_files.append("final image (image_*.png)")
+
+    step_log_path = reward_dir / "intermediate_rewards.json"
+    if step_log_path.exists():
+        try:
+            step_logs = json.loads(step_log_path.read_text(encoding="utf-8"))
+            eval_csv_path = reward_dir / "eval_reward_trace.csv"
+            steer_csv_path = reward_dir / "steer_reward_trace.csv"
+            with eval_csv_path.open("w", newline="", encoding="utf-8") as f_eval:
+                writer = csv.writer(f_eval)
+                writer.writerow(["step", "image_reward_max", "image_reward_mean"])
+                for row in step_logs:
+                    writer.writerow([
+                        row.get("step"),
+                        row.get("image_reward_max"),
+                        row.get("image_reward_mean"),
+                    ])
+            with steer_csv_path.open("w", newline="", encoding="utf-8") as f_steer:
+                writer = csv.writer(f_steer)
+                writer.writerow(["step", "pickscore_max", "pickscore_mean"])
+                for row in step_logs:
+                    writer.writerow([
+                        row.get("step"),
+                        row.get("pickscore_max"),
+                        row.get("pickscore_mean"),
+                    ])
+            copied_files["eval_reward_trace_csv"] = str(eval_csv_path)
+            copied_files["steer_reward_trace_csv"] = str(steer_csv_path)
+        except Exception as exc:
+            missing_files.append(f"parse intermediate_rewards.json failed: {exc}")
+    else:
+        missing_files.append("intermediate_rewards.json for CSV conversion")
+
+    manifest = {
+        "run_name": run_name,
+        "prompt": prompt,
+        "run_output_dir": str(run_output_dir),
+        "artifacts_dir": str(run_artifacts_dir),
+        "files": copied_files,
+        "missing": missing_files,
+    }
+    return manifest
 
 def _print_summary(rows):
     if not rows:
@@ -183,12 +284,16 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = args.log_dir or (args.output_dir / "_batch_logs")
     log_dir.mkdir(parents=True, exist_ok=True)
+    artifacts_root = args.output_dir / "_batch_artifacts"
+    artifacts_root.mkdir(parents=True, exist_ok=True)
+    artifacts_manifest_path = artifacts_root / "manifest.jsonl"
     _title("SDXL Batch Runner")
     print(f"Prompt file : {args.prompts_file}")
     print(f"Script      : {args.sdxl_script}")
     print(f"Runs        : {len(selected_prompts)} (from index {args.start_index})")
     print(f"Output root : {args.output_dir}")
     print(f"Log dir     : {log_dir}")
+    print(f"Artifacts   : {artifacts_root}")
     print()
     rows = []
     success_count = 0
@@ -221,6 +326,14 @@ def main():
         if proc.returncode == 0:
             success_count += 1
             status = _c("OK", _Style.GREEN, _Style.BOLD)
+            artifact_manifest = _collect_run_artifacts(
+                run_output_dir=run_output_dir,
+                run_name=run_name,
+                prompt=prompt,
+                artifacts_root=artifacts_root,
+            )
+            with artifacts_manifest_path.open("a", encoding="utf-8") as mf:
+                mf.write(json.dumps(artifact_manifest) + "\n")
             rows.append({
                 "index": global_idx,
                 "status": "OK",
@@ -228,6 +341,14 @@ def main():
                 "prompt": prompt,
             })
             print(_c(f"  status: {status}  time: {elapsed:.2f}s", _Style.DIM))
+            if artifact_manifest["missing"]:
+                print(_c("  artifact warnings:", _Style.YELLOW, _Style.BOLD), "; ".join(artifact_manifest["missing"]))
+            if artifact_manifest["files"].get("final_image_png"):
+                print(_c("  final image:", _Style.DIM), artifact_manifest["files"]["final_image_png"])
+            if artifact_manifest["files"].get("eval_reward_trace_csv"):
+                print(_c("  eval reward trace:", _Style.DIM), artifact_manifest["files"]["eval_reward_trace_csv"])
+            if artifact_manifest["files"].get("steer_reward_trace_csv"):
+                print(_c("  steer reward trace:", _Style.DIM), artifact_manifest["files"]["steer_reward_trace_csv"])
         else:
             status = _c("FAIL", _Style.RED, _Style.BOLD)
             rows.append({
@@ -254,6 +375,8 @@ def main():
     print(f"Failed    : {len(rows) - success_count}")
     print(f"Wall time : {total_elapsed:.2f}s")
     print(f"Logs      : {log_dir}")
+    print(f"Artifacts : {artifacts_root}")
+    print(f"Manifest  : {artifacts_manifest_path}")
     return 0 if success_count == len(rows) else 1
 
 if __name__ == "__main__":
