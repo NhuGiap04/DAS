@@ -186,9 +186,14 @@ def main():
     final_particle_eval_rewards = eval_image_reward(final_particle_images, final_particle_prompts).detach().cpu()
     log_w_cpu = log_w.detach().to(torch.float32).flatten().cpu()
     normalized_w_cpu = normalized_w.detach().to(torch.float32).flatten().cpu()
-    best_particle_index = int(torch.argmax(log_w_cpu).item())
-    if best_particle_index >= final_particle_steer_rewards.numel():
-        best_particle_index = final_particle_steer_rewards.numel() - 1
+    common_particle_count = min(
+        int(final_particle_images.shape[0]),
+        int(final_particle_steer_rewards.numel()),
+        int(final_particle_eval_rewards.numel()),
+    )
+    if common_particle_count <= 0:
+        raise RuntimeError("No final particles available for reward logging.")
+    best_particle_index = int(torch.argmax(final_particle_eval_rewards[:common_particle_count]).item())
     steer_reward = float(final_particle_steer_rewards[best_particle_index].item())
     final_image_reward = float(final_particle_eval_rewards[best_particle_index].item())
 
@@ -235,7 +240,7 @@ def main():
             json.dump(step_logs, f, indent=2)
 
     # Save best image
-    image_np = (image[0].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)
+    image_np = (final_particle_images[best_particle_index].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)
     image_pil = Image.fromarray(image_np)
     image_filename = os.path.join(prompt_dir, f"image_PickScore_{steer_reward:.6f}_ImageReward_{final_image_reward:.6f}.png")
     image_pil.save(image_filename)
@@ -244,7 +249,7 @@ def main():
     final_particles_dir = os.path.join(prompt_dir, "final_particles")
     os.makedirs(final_particles_dir, exist_ok=True)
     final_particle_image_paths = []
-    for idx in range(final_particle_images.shape[0]):
+    for idx in range(common_particle_count):
         particle_np = (final_particle_images[idx].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)
         particle_pil = Image.fromarray(particle_np)
         particle_steer = float(final_particle_steer_rewards[idx].item())
@@ -271,7 +276,7 @@ def main():
                 "eval_reward": float(final_particle_eval_rewards[idx].item()),
                 "image_path": final_particle_image_paths[idx],
             }
-            for idx in range(final_particle_images.shape[0])
+            for idx in range(common_particle_count)
         ],
     }
     with open(final_rewards_path, "w", encoding="utf-8") as f:
