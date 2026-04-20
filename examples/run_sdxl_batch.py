@@ -120,39 +120,57 @@ def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, art
 
     copied_files: Dict[str, Optional[str]] = {
         "intermediate_rewards_json": None,
-        "image_reward_max_trace_npy": None,
-        "image_reward_mean_trace_npy": None,
-        "pickscore_max_trace_npy": None,
-        "pickscore_mean_trace_npy": None,
-        "reward_trace_after_png": None,
-        "reward_trace_before_png": None,
+        "eval_reward_before_max_trace_npy": None,
+        "eval_reward_before_mean_trace_npy": None,
+        "eval_reward_after_max_trace_npy": None,
+        "eval_reward_after_mean_trace_npy": None,
+        "steer_reward_before_max_trace_npy": None,
+        "steer_reward_before_mean_trace_npy": None,
+        "steer_reward_after_max_trace_npy": None,
+        "steer_reward_after_mean_trace_npy": None,
+        "reward_trace_eval_before_after_png": None,
+        "reward_trace_steer_before_after_png": None,
         "final_image_png": None,
         "eval_reward_trace_csv": None,
         "steer_reward_trace_csv": None,
     }
     missing_files: List[str] = []
 
-    expected_reward_files = [
-        "intermediate_rewards.json",
-        "image_reward_max_trace.npy",
-        "image_reward_mean_trace.npy",
-        "pickscore_max_trace.npy",
-        "pickscore_mean_trace.npy",
-        "reward_trace_after.png",
-        "reward_trace_before.png",
-    ]
-    for filename in expected_reward_files:
-        matches = list(run_output_dir.rglob(filename))
-        if not matches:
-            missing_files.append(filename)
+    expected_reward_files = {
+        "intermediate_rewards_json": ["intermediate_rewards.json"],
+        "eval_reward_before_max_trace_npy": ["eval_reward_before_max_trace.npy", "image_reward_max_trace.npy"],
+        "eval_reward_before_mean_trace_npy": ["eval_reward_before_mean_trace.npy", "image_reward_mean_trace.npy"],
+        "eval_reward_after_max_trace_npy": ["eval_reward_after_max_trace.npy"],
+        "eval_reward_after_mean_trace_npy": ["eval_reward_after_mean_trace.npy"],
+        "steer_reward_before_max_trace_npy": ["steer_reward_before_max_trace.npy", "pickscore_max_trace.npy"],
+        "steer_reward_before_mean_trace_npy": ["steer_reward_before_mean_trace.npy", "pickscore_mean_trace.npy"],
+        "steer_reward_after_max_trace_npy": ["steer_reward_after_max_trace.npy"],
+        "steer_reward_after_mean_trace_npy": ["steer_reward_after_mean_trace.npy"],
+        # New names first; old names kept for backward compatibility.
+        "reward_trace_eval_before_after_png": [
+            "reward_trace_eval_before_after.png",
+            "reward_trace_before_eval.png",
+            "reward_trace_after.png",
+        ],
+        "reward_trace_steer_before_after_png": [
+            "reward_trace_steer_before_after.png",
+            "reward_trace_before_steer.png",
+            "reward_trace_before.png",
+        ],
+    }
+    for key, filename_candidates in expected_reward_files.items():
+        src = None
+        for filename in filename_candidates:
+            matches = list(run_output_dir.rglob(filename))
+            if matches:
+                src = max(matches, key=lambda p: p.stat().st_mtime)
+                break
+        if src is None:
+            missing_files.append(" or ".join(filename_candidates))
             continue
-        src = max(matches, key=lambda p: p.stat().st_mtime)
-        dst = reward_dir / filename
+
+        dst = reward_dir / filename_candidates[0]
         shutil.copy2(src, dst)
-        key = (
-            "intermediate_rewards_json" if filename == "intermediate_rewards.json"
-            else f"{filename.replace('.', '_')}"
-        )
         copied_files[key] = str(dst)
 
     image_candidates = [
@@ -175,21 +193,37 @@ def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, art
             steer_csv_path = reward_dir / "steer_reward_trace.csv"
             with eval_csv_path.open("w", newline="", encoding="utf-8") as f_eval:
                 writer = csv.writer(f_eval)
-                writer.writerow(["step", "image_reward_max", "image_reward_mean"])
+                writer.writerow([
+                    "step",
+                    "eval_reward_before_max",
+                    "eval_reward_before_mean",
+                    "eval_reward_after_max",
+                    "eval_reward_after_mean",
+                ])
                 for row in step_logs:
                     writer.writerow([
                         row.get("step"),
-                        row.get("image_reward_max"),
-                        row.get("image_reward_mean"),
+                        row.get("eval_reward_before_max", row.get("image_reward_max")),
+                        row.get("eval_reward_before_mean", row.get("image_reward_mean")),
+                        row.get("eval_reward_after_max"),
+                        row.get("eval_reward_after_mean"),
                     ])
             with steer_csv_path.open("w", newline="", encoding="utf-8") as f_steer:
                 writer = csv.writer(f_steer)
-                writer.writerow(["step", "pickscore_max", "pickscore_mean"])
+                writer.writerow([
+                    "step",
+                    "steer_reward_before_max",
+                    "steer_reward_before_mean",
+                    "steer_reward_after_max",
+                    "steer_reward_after_mean",
+                ])
                 for row in step_logs:
                     writer.writerow([
                         row.get("step"),
-                        row.get("pickscore_max"),
-                        row.get("pickscore_mean"),
+                        row.get("steer_reward_before_max", row.get("pickscore_max")),
+                        row.get("steer_reward_before_mean", row.get("pickscore_mean")),
+                        row.get("steer_reward_after_max"),
+                        row.get("steer_reward_after_mean"),
                     ])
             copied_files["eval_reward_trace_csv"] = str(eval_csv_path)
             copied_files["steer_reward_trace_csv"] = str(steer_csv_path)

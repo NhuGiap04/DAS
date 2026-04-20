@@ -121,6 +121,7 @@ def pipeline_using_smc_sdxl(
     kl_coeff: float = 1.,
     verbose: bool = False, # True for debugging SMC procedure
     show_intermediate_rewards: bool = False,
+    return_after_steer_latents: bool = False,
     **kwargs,
 ):
     # Handle deprecated callback parameters
@@ -354,6 +355,7 @@ def pipeline_using_smc_sdxl(
     
     resample_fn = resampling_function(resample_strategy=resample_strategy, ess_threshold=ess_threshold)
     all_latents = []
+    all_after_steer_latents = []
     all_log_w = []
     all_resample_indices = []
     ess_trace = []
@@ -564,6 +566,8 @@ def pipeline_using_smc_sdxl(
                 std_dev_t = variance.sqrt()
 
                 prop_latents = prev_sample + variance * approx_guidance
+                if return_after_steer_latents:
+                    all_after_steer_latents.append(prop_latents.cpu())
                 manifold_deviation_trace = torch.cat([manifold_deviation_trace, ((variance * approx_guidance * (-noise_pred)).view(num_particles, -1).sum(dim=1).abs() / (noise_pred**2).view(num_particles, -1).sum(dim=1).sqrt()).unsqueeze(1)], dim=1)
                 
                 log_prob_diffusion = -0.5 * (prop_latents - prev_sample_mean).pow(2) / variance - torch.log(std_dev_t) - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
@@ -641,4 +645,19 @@ def pipeline_using_smc_sdxl(
     # Offload models
     self.maybe_free_model_hooks()
 
-    return output, log_w, normalized_w, all_latents, all_log_w, all_resample_indices, ess_trace, scale_factor_trace, rewards_trace, manifold_deviation_trace, log_prob_diffusion_trace
+    base_outputs = (
+        output,
+        log_w,
+        normalized_w,
+        all_latents,
+        all_log_w,
+        all_resample_indices,
+        ess_trace,
+        scale_factor_trace,
+        rewards_trace,
+        manifold_deviation_trace,
+        log_prob_diffusion_trace,
+    )
+    if return_after_steer_latents:
+        return base_outputs + (all_after_steer_latents,)
+    return base_outputs

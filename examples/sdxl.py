@@ -111,7 +111,7 @@ def main():
     pipe.text_encoder.to(dtype=torch.float32)
 
     # Inference
-    image, log_w, normalized_w, all_latents, all_log_w, all_resample_indices, ess_trace, scale_factor_trace, rewards_trace, manifold_deviation_trace, log_prob_diffusion_trace = pipeline_using_smc_sdxl(
+    image, log_w, normalized_w, all_latents, all_log_w, all_resample_indices, ess_trace, scale_factor_trace, rewards_trace, manifold_deviation_trace, log_prob_diffusion_trace, all_after_steer_latents = pipeline_using_smc_sdxl(
         pipe,
         prompt=prompt,
         negative_prompt="",
@@ -124,35 +124,58 @@ def main():
         reward_fn=image_reward_fn,
         kl_coeff=kl_coeff,
         show_intermediate_rewards=True,
+        return_after_steer_latents=True,
     )
 
 
-    # Evaluate decoded timestep latents using ImageReward (after steer) and PickScore (before steer)
-    image_reward_max_trace = []
-    image_reward_mean_trace = []
-    pickscore_max_trace = []
-    pickscore_mean_trace = []
+    # Evaluate decoded timestep latents before and after steer for both rewards.
+    eval_reward_before_max_trace = []
+    eval_reward_before_mean_trace = []
+    eval_reward_after_max_trace = []
+    eval_reward_after_mean_trace = []
+    steer_reward_before_max_trace = []
+    steer_reward_before_mean_trace = []
+    steer_reward_after_max_trace = []
+    steer_reward_after_mean_trace = []
     step_logs = []
-    for step_idx, step_latents in enumerate(all_latents):
-        step_latents = step_latents.to("cuda")
-        step_images = decode_latents_sdxl(pipe, step_latents)
-        step_prompts = [prompt] * step_images.shape[0]
-        # After steer: ImageReward
-        step_scores = eval_image_reward(step_images, step_prompts).detach().cpu()
-        image_reward_max_trace.append(step_scores.max().item())
-        image_reward_mean_trace.append(step_scores.mean().item())
-        # Before steer: PickScore
-        pick_scores = image_reward_fn(step_images).detach().cpu()
-        pickscore_max_trace.append(pick_scores.max().item())
-        pickscore_mean_trace.append(pick_scores.mean().item())
+    for step_idx, (step_latents_before, step_latents_after) in enumerate(zip(all_latents, all_after_steer_latents)):
+        step_latents_before = step_latents_before.to("cuda")
+        step_latents_after = step_latents_after.to("cuda")
+        step_images_before = decode_latents_sdxl(pipe, step_latents_before)
+        step_images_after = decode_latents_sdxl(pipe, step_latents_after)
+        step_prompts_before = [prompt] * step_images_before.shape[0]
+        step_prompts_after = [prompt] * step_images_after.shape[0]
+
+        # Eval Reward before/after steer
+        eval_scores_before = eval_image_reward(step_images_before, step_prompts_before).detach().cpu()
+        eval_scores_after = eval_image_reward(step_images_after, step_prompts_after).detach().cpu()
+        eval_reward_before_max_trace.append(eval_scores_before.max().item())
+        eval_reward_before_mean_trace.append(eval_scores_before.mean().item())
+        eval_reward_after_max_trace.append(eval_scores_after.max().item())
+        eval_reward_after_mean_trace.append(eval_scores_after.mean().item())
+
+        # Steer Reward before/after steer
+        steer_scores_before = image_reward_fn(step_images_before).detach().cpu()
+        steer_scores_after = image_reward_fn(step_images_after).detach().cpu()
+        steer_reward_before_max_trace.append(steer_scores_before.max().item())
+        steer_reward_before_mean_trace.append(steer_scores_before.mean().item())
+        steer_reward_after_max_trace.append(steer_scores_after.max().item())
+        steer_reward_after_mean_trace.append(steer_scores_after.mean().item())
+
         step_logs.append({
             "step": step_idx+1,
-            "image_reward_scores": step_scores.tolist(),
-            "image_reward_max": step_scores.max().item(),
-            "image_reward_mean": step_scores.mean().item(),
-            "pickscore_scores": pick_scores.tolist(),
-            "pickscore_max": pick_scores.max().item(),
-            "pickscore_mean": pick_scores.mean().item()
+            "eval_reward_before_scores": eval_scores_before.tolist(),
+            "eval_reward_before_max": eval_scores_before.max().item(),
+            "eval_reward_before_mean": eval_scores_before.mean().item(),
+            "eval_reward_after_scores": eval_scores_after.tolist(),
+            "eval_reward_after_max": eval_scores_after.max().item(),
+            "eval_reward_after_mean": eval_scores_after.mean().item(),
+            "steer_reward_before_scores": steer_scores_before.tolist(),
+            "steer_reward_before_max": steer_scores_before.max().item(),
+            "steer_reward_before_mean": steer_scores_before.mean().item(),
+            "steer_reward_after_scores": steer_scores_after.tolist(),
+            "steer_reward_after_max": steer_scores_after.max().item(),
+            "steer_reward_after_mean": steer_scores_after.mean().item(),
         })
 
     # Final image metrics
@@ -162,38 +185,51 @@ def main():
 
 
     # Save traces as .npy
-    np.save(os.path.join(prompt_dir, "image_reward_max_trace.npy"), np.array(image_reward_max_trace))
-    np.save(os.path.join(prompt_dir, "image_reward_mean_trace.npy"), np.array(image_reward_mean_trace))
-    np.save(os.path.join(prompt_dir, "pickscore_max_trace.npy"), np.array(pickscore_max_trace))
-    np.save(os.path.join(prompt_dir, "pickscore_mean_trace.npy"), np.array(pickscore_mean_trace))
+    np.save(os.path.join(prompt_dir, "eval_reward_before_max_trace.npy"), np.array(eval_reward_before_max_trace))
+    np.save(os.path.join(prompt_dir, "eval_reward_before_mean_trace.npy"), np.array(eval_reward_before_mean_trace))
+    np.save(os.path.join(prompt_dir, "eval_reward_after_max_trace.npy"), np.array(eval_reward_after_max_trace))
+    np.save(os.path.join(prompt_dir, "eval_reward_after_mean_trace.npy"), np.array(eval_reward_after_mean_trace))
+    np.save(os.path.join(prompt_dir, "steer_reward_before_max_trace.npy"), np.array(steer_reward_before_max_trace))
+    np.save(os.path.join(prompt_dir, "steer_reward_before_mean_trace.npy"), np.array(steer_reward_before_mean_trace))
+    np.save(os.path.join(prompt_dir, "steer_reward_after_max_trace.npy"), np.array(steer_reward_after_max_trace))
+    np.save(os.path.join(prompt_dir, "steer_reward_after_mean_trace.npy"), np.array(steer_reward_after_mean_trace))
 
-    # Plot and save separate reward traces
-    # 1. ImageReward (after steer)
+    # Backward-compatible aliases for existing artifact collectors.
+    np.save(os.path.join(prompt_dir, "image_reward_max_trace.npy"), np.array(eval_reward_before_max_trace))
+    np.save(os.path.join(prompt_dir, "image_reward_mean_trace.npy"), np.array(eval_reward_before_mean_trace))
+    np.save(os.path.join(prompt_dir, "pickscore_max_trace.npy"), np.array(steer_reward_before_max_trace))
+    np.save(os.path.join(prompt_dir, "pickscore_mean_trace.npy"), np.array(steer_reward_before_mean_trace))
+
+    # Plot 1: Eval Reward (Before/After Steer), mean and max.
     plt.figure(figsize=(8, 5))
-    plt.plot(image_reward_max_trace, label='ImageReward Max', marker='o')
-    plt.plot(image_reward_mean_trace, label='ImageReward Mean', marker='x')
+    plt.plot(eval_reward_before_max_trace, label='Before Max', marker='o')
+    plt.plot(eval_reward_before_mean_trace, label='Before Mean', marker='x')
+    plt.plot(eval_reward_after_max_trace, label='After Max', marker='s')
+    plt.plot(eval_reward_after_mean_trace, label='After Mean', marker='^')
     plt.xlabel('Timestep')
     plt.ylabel('Reward')
-    plt.title('ImageReward (After Steer) at Each Timestep')
+    plt.title('Eval Reward: Before vs After Steer')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.5)
-    plot_path_after = os.path.join(prompt_dir, "reward_trace_after.png")
+    plot_path_eval_before_after = os.path.join(prompt_dir, "reward_trace_eval_before_after.png")
     plt.tight_layout()
-    plt.savefig(plot_path_after)
+    plt.savefig(plot_path_eval_before_after)
     plt.close()
 
-    # 2. PickScore (before steer)
+    # Plot 2: Steer Reward (Before/After Steer), mean and max.
     plt.figure(figsize=(8, 5))
-    plt.plot(pickscore_max_trace, label='PickScore Max', marker='o', color='tab:orange')
-    plt.plot(pickscore_mean_trace, label='PickScore Mean', marker='x', color='tab:green')
+    plt.plot(steer_reward_before_max_trace, label='Before Max', marker='o', color='tab:orange')
+    plt.plot(steer_reward_before_mean_trace, label='Before Mean', marker='x', color='tab:green')
+    plt.plot(steer_reward_after_max_trace, label='After Max', marker='s', color='tab:red')
+    plt.plot(steer_reward_after_mean_trace, label='After Mean', marker='^', color='tab:blue')
     plt.xlabel('Timestep')
     plt.ylabel('Reward')
-    plt.title('PickScore (Before Steer) at Each Timestep')
+    plt.title('Steer Reward: Before vs After Steer')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.5)
-    plot_path_before = os.path.join(prompt_dir, "reward_trace_before.png")
+    plot_path_steer_before_after = os.path.join(prompt_dir, "reward_trace_steer_before_after.png")
     plt.tight_layout()
-    plt.savefig(plot_path_before)
+    plt.savefig(plot_path_steer_before_after)
     plt.close()
 
     # Save step logs as JSON if requested
@@ -214,8 +250,8 @@ def main():
     print(f"Prompt: {prompt}")
     print(f"Saved image: {image_filename}")
     print(f"PickScore: {steer_reward:.6f} | ImageReward: {final_image_reward:.6f}")
-    print(f"Reward trace plot (after steer) saved to: {plot_path_after}")
-    print(f"Reward trace plot (before steer) saved to: {plot_path_before}")
+    print(f"Eval reward trace plot (before/after steer) saved to: {plot_path_eval_before_after}")
+    print(f"Steer reward trace plot (before/after steer) saved to: {plot_path_steer_before_after}")
     print(f"All outputs saved in: {prompt_dir}")
 
 
