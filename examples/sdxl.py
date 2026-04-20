@@ -42,13 +42,13 @@ def main():
     prompt_slug = slugify(prompt)
     prompt_dir = os.path.join(output_dir, prompt_slug)
     os.makedirs(prompt_dir, exist_ok=True)
-    repeated_prompts = [prompt] * batch_p
-
-
     # Use a differentiable reward for steering during denoising.
     steer_reward_fn = rewards.PickScore(device="cuda")
     def image_reward_fn(images):
-        scores = steer_reward_fn(images, repeated_prompts)
+        # PickScore returns the diagonal of image-text similarities, so we need
+        # one prompt per image to get one score per particle.
+        prompt_batch = [prompt] * int(images.shape[0])
+        scores = steer_reward_fn(images, prompt_batch)
         if isinstance(scores, tuple):
             scores = scores[-1]
         return torch.as_tensor(scores)
@@ -184,9 +184,11 @@ def main():
     final_particle_prompts = [prompt] * final_particle_images.shape[0]
     final_particle_steer_rewards = image_reward_fn(final_particle_images).detach().cpu()
     final_particle_eval_rewards = eval_image_reward(final_particle_images, final_particle_prompts).detach().cpu()
-    log_w_cpu = log_w.detach().to(torch.float32).cpu()
-    normalized_w_cpu = normalized_w.detach().to(torch.float32).cpu()
+    log_w_cpu = log_w.detach().to(torch.float32).flatten().cpu()
+    normalized_w_cpu = normalized_w.detach().to(torch.float32).flatten().cpu()
     best_particle_index = int(torch.argmax(log_w_cpu).item())
+    if best_particle_index >= final_particle_steer_rewards.numel():
+        best_particle_index = final_particle_steer_rewards.numel() - 1
     steer_reward = float(final_particle_steer_rewards[best_particle_index].item())
     final_image_reward = float(final_particle_eval_rewards[best_particle_index].item())
 
