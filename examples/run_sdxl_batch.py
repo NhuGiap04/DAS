@@ -120,32 +120,19 @@ def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, art
 
     copied_files: Dict[str, Optional[str]] = {
         "intermediate_rewards_json": None,
-        "eval_reward_before_max_trace_npy": None,
-        "eval_reward_before_mean_trace_npy": None,
-        "eval_reward_after_max_trace_npy": None,
-        "eval_reward_after_mean_trace_npy": None,
-        "steer_reward_before_max_trace_npy": None,
-        "steer_reward_before_mean_trace_npy": None,
-        "steer_reward_after_max_trace_npy": None,
-        "steer_reward_after_mean_trace_npy": None,
+        "final_rewards_json": None,
         "reward_trace_eval_before_after_png": None,
         "reward_trace_steer_before_after_png": None,
         "final_image_png": None,
         "eval_reward_trace_csv": None,
         "steer_reward_trace_csv": None,
     }
+    final_particle_images: List[str] = []
     missing_files: List[str] = []
 
     expected_reward_files = {
         "intermediate_rewards_json": ["intermediate_rewards.json"],
-        "eval_reward_before_max_trace_npy": ["eval_reward_before_max_trace.npy", "image_reward_max_trace.npy"],
-        "eval_reward_before_mean_trace_npy": ["eval_reward_before_mean_trace.npy", "image_reward_mean_trace.npy"],
-        "eval_reward_after_max_trace_npy": ["eval_reward_after_max_trace.npy"],
-        "eval_reward_after_mean_trace_npy": ["eval_reward_after_mean_trace.npy"],
-        "steer_reward_before_max_trace_npy": ["steer_reward_before_max_trace.npy", "pickscore_max_trace.npy"],
-        "steer_reward_before_mean_trace_npy": ["steer_reward_before_mean_trace.npy", "pickscore_mean_trace.npy"],
-        "steer_reward_after_max_trace_npy": ["steer_reward_after_max_trace.npy"],
-        "steer_reward_after_mean_trace_npy": ["steer_reward_after_mean_trace.npy"],
+        "final_rewards_json": ["final_rewards.json"],
         # New names first; old names kept for backward compatibility.
         "reward_trace_eval_before_after_png": [
             "reward_trace_eval_before_after.png",
@@ -184,6 +171,20 @@ def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, art
         copied_files["final_image_png"] = str(dst)
     else:
         missing_files.append("final image (image_*.png)")
+
+    particle_image_candidates = sorted(
+        [p for p in run_output_dir.rglob("final_particle_*.png")],
+        key=lambda p: p.name,
+    )
+    if particle_image_candidates:
+        particles_dir = image_dir / "final_particles"
+        particles_dir.mkdir(parents=True, exist_ok=True)
+        for src in particle_image_candidates:
+            dst = particles_dir / src.name
+            shutil.copy2(src, dst)
+            final_particle_images.append(str(dst))
+    else:
+        missing_files.append("final particle images (final_particle_*.png)")
 
     step_log_path = reward_dir / "intermediate_rewards.json"
     if step_log_path.exists():
@@ -238,6 +239,7 @@ def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, art
         "run_output_dir": str(run_output_dir),
         "artifacts_dir": str(run_artifacts_dir),
         "files": copied_files,
+        "final_particle_images": final_particle_images,
         "missing": missing_files,
     }
     return manifest
@@ -379,6 +381,13 @@ def main():
                 print(_c("  artifact warnings:", _Style.YELLOW, _Style.BOLD), "; ".join(artifact_manifest["missing"]))
             if artifact_manifest["files"].get("final_image_png"):
                 print(_c("  final image:", _Style.DIM), artifact_manifest["files"]["final_image_png"])
+            if artifact_manifest["files"].get("final_rewards_json"):
+                print(_c("  final rewards:", _Style.DIM), artifact_manifest["files"]["final_rewards_json"])
+            if artifact_manifest.get("final_particle_images"):
+                print(
+                    _c("  final particle images:", _Style.DIM),
+                    f"{len(artifact_manifest['final_particle_images'])} files",
+                )
             if artifact_manifest["files"].get("eval_reward_trace_csv"):
                 print(_c("  eval reward trace:", _Style.DIM), artifact_manifest["files"]["eval_reward_trace_csv"])
             if artifact_manifest["files"].get("steer_reward_trace_csv"):

@@ -178,27 +178,19 @@ def main():
             "steer_reward_after_mean": steer_scores_after.mean().item(),
         })
 
-    # Final image metrics
-    steer_reward = image_reward_fn(image).item()
-    final_image_reward = eval_image_reward(image, [prompt]).item()
+    # Final particle metrics from final after-steer latents.
+    final_latents_after_steer = all_after_steer_latents[-1].to("cuda")
+    final_particle_images = decode_latents_sdxl(pipe, final_latents_after_steer)
+    final_particle_prompts = [prompt] * final_particle_images.shape[0]
+    final_particle_steer_rewards = image_reward_fn(final_particle_images).detach().cpu()
+    final_particle_eval_rewards = eval_image_reward(final_particle_images, final_particle_prompts).detach().cpu()
+    log_w_cpu = log_w.detach().to(torch.float32).cpu()
+    normalized_w_cpu = normalized_w.detach().to(torch.float32).cpu()
+    best_particle_index = int(torch.argmax(log_w_cpu).item())
+    steer_reward = float(final_particle_steer_rewards[best_particle_index].item())
+    final_image_reward = float(final_particle_eval_rewards[best_particle_index].item())
 
 
-
-    # Save traces as .npy
-    np.save(os.path.join(prompt_dir, "eval_reward_before_max_trace.npy"), np.array(eval_reward_before_max_trace))
-    np.save(os.path.join(prompt_dir, "eval_reward_before_mean_trace.npy"), np.array(eval_reward_before_mean_trace))
-    np.save(os.path.join(prompt_dir, "eval_reward_after_max_trace.npy"), np.array(eval_reward_after_max_trace))
-    np.save(os.path.join(prompt_dir, "eval_reward_after_mean_trace.npy"), np.array(eval_reward_after_mean_trace))
-    np.save(os.path.join(prompt_dir, "steer_reward_before_max_trace.npy"), np.array(steer_reward_before_max_trace))
-    np.save(os.path.join(prompt_dir, "steer_reward_before_mean_trace.npy"), np.array(steer_reward_before_mean_trace))
-    np.save(os.path.join(prompt_dir, "steer_reward_after_max_trace.npy"), np.array(steer_reward_after_max_trace))
-    np.save(os.path.join(prompt_dir, "steer_reward_after_mean_trace.npy"), np.array(steer_reward_after_mean_trace))
-
-    # Backward-compatible aliases for existing artifact collectors.
-    np.save(os.path.join(prompt_dir, "image_reward_max_trace.npy"), np.array(eval_reward_before_max_trace))
-    np.save(os.path.join(prompt_dir, "image_reward_mean_trace.npy"), np.array(eval_reward_before_mean_trace))
-    np.save(os.path.join(prompt_dir, "pickscore_max_trace.npy"), np.array(steer_reward_before_max_trace))
-    np.save(os.path.join(prompt_dir, "pickscore_mean_trace.npy"), np.array(steer_reward_before_mean_trace))
 
     # Plot 1: Eval Reward (Before/After Steer), mean and max.
     plt.figure(figsize=(8, 5))
@@ -240,15 +232,54 @@ def main():
         with open(args.log_json, 'w') as f:
             json.dump(step_logs, f, indent=2)
 
-    # Save image
+    # Save best image
     image_np = (image[0].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)
     image_pil = Image.fromarray(image_np)
     image_filename = os.path.join(prompt_dir, f"image_PickScore_{steer_reward:.6f}_ImageReward_{final_image_reward:.6f}.png")
     image_pil.save(image_filename)
 
+    # Save all final particle images
+    final_particles_dir = os.path.join(prompt_dir, "final_particles")
+    os.makedirs(final_particles_dir, exist_ok=True)
+    final_particle_image_paths = []
+    for idx in range(final_particle_images.shape[0]):
+        particle_np = (final_particle_images[idx].cpu().numpy() * 255).transpose(1, 2, 0).round().astype(np.uint8)
+        particle_pil = Image.fromarray(particle_np)
+        particle_steer = float(final_particle_steer_rewards[idx].item())
+        particle_eval = float(final_particle_eval_rewards[idx].item())
+        particle_path = os.path.join(
+            final_particles_dir,
+            f"final_particle_{idx:03d}_PickScore_{particle_steer:.6f}_ImageReward_{particle_eval:.6f}.png",
+        )
+        particle_pil.save(particle_path)
+        final_particle_image_paths.append(particle_path)
+
+    final_rewards_path = os.path.join(prompt_dir, "final_rewards.json")
+    final_rewards_payload = {
+        "prompt": prompt,
+        "best_particle_index": best_particle_index,
+        "best_particle_steer_reward": steer_reward,
+        "best_particle_eval_reward": final_image_reward,
+        "log_w": log_w_cpu.tolist(),
+        "normalized_w": normalized_w_cpu.tolist(),
+        "all_particles": [
+            {
+                "particle_index": idx,
+                "steer_reward": float(final_particle_steer_rewards[idx].item()),
+                "eval_reward": float(final_particle_eval_rewards[idx].item()),
+                "image_path": final_particle_image_paths[idx],
+            }
+            for idx in range(final_particle_images.shape[0])
+        ],
+    }
+    with open(final_rewards_path, "w", encoding="utf-8") as f:
+        json.dump(final_rewards_payload, f, indent=2)
+
     # Print only summary info
     print(f"Prompt: {prompt}")
     print(f"Saved image: {image_filename}")
+    print(f"Saved all final particle images in: {final_particles_dir}")
+    print(f"Saved final reward summary: {final_rewards_path}")
     print(f"PickScore: {steer_reward:.6f} | ImageReward: {final_image_reward:.6f}")
     print(f"Eval reward trace plot (before/after steer) saved to: {plot_path_eval_before_after}")
     print(f"Steer reward trace plot (before/after steer) saved to: {plot_path_steer_before_after}")
