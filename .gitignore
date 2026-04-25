@@ -11,4 +11,5 @@ extension
 *.vsix
 *.tar
 *.egg-info
-.vscode/
+
+.codex
