@@ -1,6 +1,7 @@
 logs
 wandb
 __pycache__/
+.vscode/
 
 extension
 
@@ -10,3 +11,4 @@ extension
 *.vsix
 *.tar
 *.egg-info
+.vscode/
