@@ -40,6 +40,15 @@ python runs/run_sd_batch.py --prompts_file prompts.txt --save-final-artifacts
 python runs/run_sdxl_batch.py --prompts_file prompts.txt --save-final-artifacts
 ```
 
+Normal diffusers baselines without reward steering are available in `runs/baseline`:
+
+```bash
+python runs/baseline/sd.py --prompt "cat and a dog" --save-final-artifacts
+python runs/baseline/sdxl.py --prompt "cat and a dog" --save-final-artifacts
+python runs/baseline/run_sd_batch.py --prompts_file prompts.txt --seed 42 --save-final-artifacts
+python runs/baseline/run_sdxl_batch.py --prompts_file prompts.txt --seed 42 --save-final-artifacts
+```
+
 ### Multiple prompts with Multiple gpus
 
 To run Aesthetic score experiment with Stable Diffusion 1.5:
