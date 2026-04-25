@@ -120,8 +120,7 @@ def pipeline_using_smc_sdxl(
     reward_fn: Callable[Union[torch.Tensor, np.ndarray], float] = None,
     kl_coeff: float = 1.,
     verbose: bool = False, # True for debugging SMC procedure
-    show_intermediate_rewards: bool = False,
-    return_after_steer_latents: bool = False,
+    return_final_particles: bool = False,
     **kwargs,
 ):
     # Handle deprecated callback parameters
@@ -355,12 +354,10 @@ def pipeline_using_smc_sdxl(
     
     resample_fn = resampling_function(resample_strategy=resample_strategy, ess_threshold=ess_threshold)
     all_latents = []
-    all_after_steer_latents = []
     all_log_w = []
     all_resample_indices = []
     ess_trace = []
     scale_factor_trace = []
-    rewards_trace = []
     manifold_deviation_trace = torch.tensor([], device=device)
     log_prob_diffusion_trace = torch.tensor([], device=device)
 
@@ -441,16 +438,6 @@ def pipeline_using_smc_sdxl(
                     noise_pred[batch_p*idx : batch_p*(idx+1)] = tmp_noise_pred.detach().clone()
                     guidance[batch_p*idx : batch_p*(idx+1)] = tmp_guidance.detach().clone()
 
-        if show_intermediate_rewards and (i >= start):
-            rewards_per_prompt = rewards.view(-1, num_particles).detach().to(torch.float32).cpu()
-            timestep_value = int(torch.as_tensor(t).item())
-            for prompt_idx, prompt_rewards in enumerate(rewards_per_prompt):
-                reward_values = ", ".join(f"{value:.6f}" for value in prompt_rewards.tolist())
-                print(
-                    f"[SMC-SDXL][intermediate_reward] step={i+1}/{num_inference_steps} "
-                    f"timestep={timestep_value} prompt={prompt_idx} particle_rewards=[{reward_values}]"
-                )
-
         if verbose:
             print("Expected rewards of proposals: ", rewards)
 
@@ -469,7 +456,6 @@ def pipeline_using_smc_sdxl(
             log_twist_func_prev = log_twist_func.clone()
 
             _calc_guidance()
-            rewards_trace.append(rewards.view(-1, num_particles).max(dim=1)[0].cpu())
 
             with torch.no_grad():
                 if (i >= start):
@@ -566,8 +552,6 @@ def pipeline_using_smc_sdxl(
                 std_dev_t = variance.sqrt()
 
                 prop_latents = prev_sample + variance * approx_guidance
-                if return_after_steer_latents:
-                    all_after_steer_latents.append(prop_latents.cpu())
                 manifold_deviation_trace = torch.cat([manifold_deviation_trace, ((variance * approx_guidance * (-noise_pred)).view(num_particles, -1).sum(dim=1).abs() / (noise_pred**2).view(num_particles, -1).sum(dim=1).sqrt()).unsqueeze(1)], dim=1)
                 
                 log_prob_diffusion = -0.5 * (prop_latents - prev_sample_mean).pow(2) / variance - torch.log(std_dev_t) - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
@@ -599,7 +583,6 @@ def pipeline_using_smc_sdxl(
     log_twist_func = lookforward_fn(rewards)
     
     scale_factor_trace.append(min_scale_next.cpu())
-    rewards_trace.append(rewards.view(-1, num_particles).max(dim=1)[0].cpu())
     
     # Final weight update
     log_w += log_prob_diffusion + log_twist_func - log_prob_proposal - log_twist_func_prev
@@ -619,6 +602,7 @@ def pipeline_using_smc_sdxl(
     all_log_w.append(log_w)
     ess_trace.append(torch.tensor(ess).cpu())
 
+    final_particles = images
     image = images[torch.argmax(log_w)].unsqueeze(0) # return only image with maximum weight
     latent = latents[torch.argmax(log_w)].unsqueeze(0)
 
@@ -638,7 +622,6 @@ def pipeline_using_smc_sdxl(
     # Prepare traces for return
     ess_trace = torch.stack(ess_trace, dim=1)
     scale_factor_trace = torch.stack(scale_factor_trace, dim=1)
-    rewards_trace = torch.stack(rewards_trace, dim=1)
     manifold_deviation_trace = manifold_deviation_trace[torch.argmax(log_w)].unsqueeze(0).cpu()
     log_prob_diffusion_trace = -log_prob_diffusion_trace[torch.argmax(log_w)].unsqueeze(0).cpu() / (4 * 64 * 64 * math.log(2))
 
@@ -654,10 +637,9 @@ def pipeline_using_smc_sdxl(
         all_resample_indices,
         ess_trace,
         scale_factor_trace,
-        rewards_trace,
         manifold_deviation_trace,
         log_prob_diffusion_trace,
     )
-    if return_after_steer_latents:
-        return base_outputs + (all_after_steer_latents,)
+    if return_final_particles:
+        return base_outputs + (final_particles,)
     return base_outputs

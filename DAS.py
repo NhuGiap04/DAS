@@ -87,17 +87,11 @@ class DAS(DiffusionModelSampler):
                 ).input_ids.to(self.accelerator.device)
                 prompt_embeds = self.pipeline.text_encoder(prompt_ids)[0]
 
-                smc_extra_kwargs = {}
-                if "xl" in self.config.pretrained.model:
-                    smc_extra_kwargs["show_intermediate_rewards"] = bool(
-                        getattr(self.config.smc, "show_intermediate_rewards", False)
-                    )
-                
                 # Sample images
                 with self.autocast():
                     images, log_w, normalized_w, latents, \
                     all_log_w, resample_indices, ess_trace, \
-                    scale_factor_trace, rewards_trace, manifold_deviation_trace, log_prob_diffusion_trace \
+                    scale_factor_trace, manifold_deviation_trace, log_prob_diffusion_trace \
                     = self.pipeline_using_smc(
                         self.pipeline,
                         prompt=list(prompts_batch),
@@ -118,11 +112,9 @@ class DAS(DiffusionModelSampler):
                         reward_fn=image_reward_fn,
                         kl_coeff=self.config.smc.kl_coeff,
                         verbose=self.config.smc.verbose,
-                        **smc_extra_kwargs,
                     )
                 self.info_eval_vis["eval_ess"].append(ess_trace)
                 self.info_eval_vis["scale_factor_trace"].append(scale_factor_trace)
-                self.info_eval_vis["rewards_trace"].append(rewards_trace)
                 self.info_eval_vis["manifold_deviation_trace"].append(manifold_deviation_trace)
                 self.info_eval_vis["log_prob_diffusion_trace"].append(log_prob_diffusion_trace)
 
@@ -140,7 +132,6 @@ class DAS(DiffusionModelSampler):
 
         ess_trace = torch.cat(self.info_eval_vis["eval_ess"])
         scale_factor_trace = torch.cat(self.info_eval_vis["scale_factor_trace"])
-        rewards_trace = torch.cat(self.info_eval_vis["rewards_trace"])
         manifold_deviation_trace = torch.cat(self.info_eval_vis["manifold_deviation_trace"])
         log_prob_diffusion_trace = torch.cat(self.info_eval_vis["log_prob_diffusion_trace"])
         
@@ -154,10 +145,6 @@ class DAS(DiffusionModelSampler):
             os.makedirs(f"{self.log_dir}/{caption}", exist_ok=True)
 
             plt.savefig(f"{self.log_dir}/{caption}/ess.png")
-            plt.clf()
-
-            plt.plot(rewards_trace[i])
-            plt.savefig(f"{self.log_dir}/{caption}/intermediate_rewards.png")
             plt.clf()
 
             plt.plot(manifold_deviation_trace[i])

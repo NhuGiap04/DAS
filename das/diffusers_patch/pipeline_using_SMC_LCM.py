@@ -111,7 +111,8 @@ def pipeline_using_smc_lcm(
     tempering_start: float = 0.,
     reward_fn: Callable[Union[torch.Tensor, np.ndarray], float] = None, # Ex) lambda images: _fn(images, prompts.repeat_interleave(batch_p, dim=0), metadata.repeat_interleave(batch_p, dim=0))
     kl_coeff: float = 1.,
-    verbose: bool = False # True for debugging SMC procedure
+    verbose: bool = False, # True for debugging SMC procedure
+    return_final_particles: bool = False,
 ):
 
     # 0. Default height and width to unet
@@ -242,7 +243,6 @@ def pipeline_using_smc_lcm(
     all_resample_indices = []
     ess_trace = []
     scale_factor_trace = []
-    rewards_trace = []
     manifold_deviation_trace = torch.tensor([], device=device)
     log_prob_diffusion_trace = torch.tensor([], device=device)
 
@@ -314,7 +314,6 @@ def pipeline_using_smc_lcm(
             log_twist_func_prev = log_twist_func.clone() # Used to calculate weight later
 
             _calc_guidance()
-            rewards_trace.append(rewards.view(-1, num_particles).max(dim=1)[0].cpu())
 
             with torch.no_grad():
                 if (i >= start):
@@ -453,7 +452,6 @@ def pipeline_using_smc_lcm(
         log_twist_func[:] = lookforward_fn(rewards)
 
         scale_factor_trace.append(min_scale_next.cpu())
-        rewards_trace.append(rewards.view(-1, num_particles).max(dim=1)[0].cpu())
 
         log_w += log_prob_diffusion + log_twist_func - log_prob_proposal - log_twist_func_prev
         log_Z += torch.logsumexp(log_w, dim=-1)
@@ -475,6 +473,7 @@ def pipeline_using_smc_lcm(
         if callback is not None:
             callback(timesteps, 0, latents)
 
+    final_particles = image
     image = image[torch.argmax(log_w)].unsqueeze(0) # return only image with maximum weight
     latent = latents[torch.argmax(log_w)].unsqueeze(0)
 
@@ -498,8 +497,21 @@ def pipeline_using_smc_lcm(
 
     ess_trace = torch.stack(ess_trace, dim=1)
     scale_factor_trace = torch.stack(scale_factor_trace, dim=1)
-    rewards_trace = torch.stack(rewards_trace, dim=1)
     manifold_deviation_trace = manifold_deviation_trace[torch.argmax(log_w)].unsqueeze(0).cpu()
     log_prob_diffusion_trace = - log_prob_diffusion_trace[torch.argmax(log_w)].unsqueeze(0).cpu() / 4 / 64 / 64 / math.log(2) # bits per dimension
 
-    return output, log_w, normalized_w, all_latents, all_log_w, all_resample_indices, ess_trace, scale_factor_trace, rewards_trace, manifold_deviation_trace, log_prob_diffusion_trace
+    base_outputs = (
+        output,
+        log_w,
+        normalized_w,
+        all_latents,
+        all_log_w,
+        all_resample_indices,
+        ess_trace,
+        scale_factor_trace,
+        manifold_deviation_trace,
+        log_prob_diffusion_trace,
+    )
+    if return_final_particles:
+        return base_outputs + (final_particles,)
+    return base_outputs

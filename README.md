@@ -25,12 +25,19 @@ Install hpsv2 from [HPSv2](https://github.com/tgxs002/HPSv2). Recommend using me
 
 ### Single prompt
 
-DAS is implemented over diffusers library, making it easy to use. Minimal code for usage with single test prompt can be found in the examples folder.
+DAS is implemented over diffusers library, making it easy to use. Minimal code for usage with single test prompt can be found in `runs/single`.
 
 ```bash
-python examples/sd.py
-python examples/sdxl.py
-python examples/lcm.py
+python runs/single/sd.py
+python runs/single/sdxl.py --prompt "cat and a dog"
+python runs/single/lcm.py
+```
+
+Batch runners for prompt files are available in `runs/`:
+
+```bash
+python runs/run_sd_batch.py --prompts_file prompts.txt --save-final-artifacts
+python runs/run_sdxl_batch.py --prompts_file prompts.txt --save-final-artifacts
 ```
 
 ### Multiple prompts with Multiple gpus
