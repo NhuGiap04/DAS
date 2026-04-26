@@ -50,7 +50,7 @@ def main():
             scores = scores[-1]
         return torch.as_tensor(scores)
 
-    pipe = DiffusionPipeline.from_pretrained("stable-diffusion-v1-5/stable-diffusion-v1-5")
+    pipe = DiffusionPipeline.from_pretrained("runwayml/stable-diffusion-v1-5")
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe.scheduler.set_timesteps(args.n_steps)
     pipe.to("cuda", torch.float16)
@@ -108,7 +108,7 @@ def main():
                 "eval_reward": "ImageReward",
             },
             "baseline_config": {
-                "model": "stable-diffusion-v1-5/stable-diffusion-v1-5",
+                "model": "runwayml/stable-diffusion-v1-5",
                 "n_steps": args.n_steps,
                 "num_images": args.num_images,
                 "guidance_scale": args.guidance_scale,
