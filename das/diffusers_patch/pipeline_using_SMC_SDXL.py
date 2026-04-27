@@ -552,6 +552,16 @@ def pipeline_using_smc_sdxl(
                 std_dev_t = variance.sqrt()
 
                 prop_latents = prev_sample + variance * approx_guidance
+                if verbose:
+                    flat_prev = prev_sample.reshape(prev_sample.shape[0], -1).to(torch.float32)
+                    flat_guide = approx_guidance.reshape(approx_guidance.shape[0], -1).to(torch.float32)
+                    flat_prop = prop_latents.reshape(prop_latents.shape[0], -1).to(torch.float32)
+                    prev_norm = flat_prev.norm(dim=1)
+                    guide_norm = flat_guide.norm(dim=1)
+                    prop_prev_cos = torch.nn.functional.cosine_similarity(flat_prop, flat_prev, dim=1)
+                    print("prev_sample L2 norm (mean over particles): ", prev_norm.mean())
+                    print("approx_guidance L2 norm (mean over particles): ", guide_norm.mean())
+                    print("cosine similarity(prop_latents, prev_sample) (mean over particles): ", prop_prev_cos.mean())
                 manifold_deviation_trace = torch.cat([manifold_deviation_trace, ((variance * approx_guidance * (-noise_pred)).view(num_particles, -1).sum(dim=1).abs() / (noise_pred**2).view(num_particles, -1).sum(dim=1).sqrt()).unsqueeze(1)], dim=1)
                 
                 log_prob_diffusion = -0.5 * (prop_latents - prev_sample_mean).pow(2) / variance - torch.log(std_dev_t) - torch.log(torch.sqrt(2 * torch.as_tensor(math.pi)))
