@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 import re
 import time
 
@@ -42,6 +43,7 @@ def main():
     parser.add_argument("--batch_p", type=int, default=batch_p)
     parser.add_argument("--kl_coeff", type=float, default=kl_coeff)
     parser.add_argument("--tempering_gamma", type=float, default=tempering_gamma)
+    parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducible sampling.")
     parser.add_argument("--save-final-artifacts", action="store_true", help="Save final particle images and rewards JSON.")
     args = parser.parse_args()
 
@@ -51,6 +53,14 @@ def main():
     run_batch_p = args.batch_p
     run_kl_coeff = args.kl_coeff
     run_tempering_gamma = args.tempering_gamma
+    run_seed = args.seed
+
+    if run_seed is not None:
+        random.seed(run_seed)
+        np.random.seed(run_seed)
+        torch.manual_seed(run_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(run_seed)
 
     ################### Rewards ###################
     config_reward_fn = rewards.PickScore(device="cuda")
@@ -75,6 +85,7 @@ def main():
     pipe.scheduler = DDIMScheduler.from_config(pipe.scheduler.config)
     pipe.scheduler.set_timesteps(run_n_steps)
     pipe.to("cuda", torch.float16)
+    generator = torch.Generator(device="cuda").manual_seed(run_seed) if run_seed is not None else None
 
     ################### Inference ###################
     start = time.perf_counter()
@@ -96,6 +107,7 @@ def main():
             prompt=run_prompt,
             negative_prompt="",
             num_inference_steps=run_n_steps,
+            generator=generator,
             output_type="pt",
             # SMC parameters
             num_particles=run_num_particles,
@@ -155,6 +167,7 @@ def main():
                 "batch_p": run_batch_p,
                 "kl_coeff": run_kl_coeff,
                 "tempering_gamma": run_tempering_gamma,
+                "seed": run_seed,
             },
             "best_particle_index": best_particle_index,
             "best_particle_config_reward": float(config_rewards[best_particle_index].item()),
