@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import random
 import re
 import time
 
@@ -36,8 +37,17 @@ def tensor_to_pil(image):
 
 def main():
     parser = argparse.ArgumentParser(description="Run LCM SMC for a single prompt.")
+    parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducible sampling.")
     parser.add_argument("--save-final-artifacts", action="store_true", help="Save final particle images and rewards JSON.")
     args = parser.parse_args()
+    run_seed = args.seed
+
+    if run_seed is not None:
+        random.seed(run_seed)
+        np.random.seed(run_seed)
+        torch.manual_seed(run_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(run_seed)
 
     ################### Rewards ###################
     config_reward_fn = rewards.PickScore(device="cuda")
@@ -64,6 +74,7 @@ def main():
     pipe.to("cuda", torch.float32)
     pipe.vae.to(dtype=torch.float32)
     pipe.text_encoder.to(dtype=torch.float32)
+    generator = torch.Generator(device="cuda").manual_seed(run_seed) if run_seed is not None else None
 
     ################### Inference ###################
     start = time.perf_counter()
@@ -84,6 +95,7 @@ def main():
         prompt=prompt,
         negative_prompt="",
         num_inference_steps=n_steps,
+        generator=generator,
         eta=0.5,
         output_type="pt",
         # SMC parameters
@@ -145,6 +157,7 @@ def main():
                 "kl_coeff": kl_coeff,
                 "tempering_gamma": tempering_gamma,
                 "eta": 0.5,
+                "seed": run_seed,
             },
             "best_particle_index": best_particle_index,
             "best_particle_config_reward": float(config_rewards[best_particle_index].item()),
