@@ -1,14 +1,22 @@
 import argparse
-import csv
 import json
 import re
 import shlex
-import shutil
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, List
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from runs.reward_eval import (
+    reward_summary_row_from_json,
+    write_reward_summary_csv,
+    write_reward_summary_stats_csv,
+)
 
 
 def _supports_color() -> bool:
@@ -129,52 +137,11 @@ def _build_sd_cmd(args, prompt, run_output_dir):
     return cmd
 
 
-def _collect_run_artifacts(run_output_dir: Path, run_name: str, prompt: str, artifacts_root: Path) -> Dict[str, Any]:
-    run_artifacts_dir = artifacts_root / run_name
-    particles_dir = run_artifacts_dir / "final_particles"
-    run_artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-    copied_files = {
-        "final_rewards_json": None,
-    }
-    final_particle_images: List[str] = []
-    missing_files: List[str] = []
-
+def _find_final_rewards_path(run_output_dir: Path) -> Path:
     final_rewards_matches = list(run_output_dir.rglob("final_rewards.json"))
     if final_rewards_matches:
-        src = max(final_rewards_matches, key=lambda p: p.stat().st_mtime)
-        dst = run_artifacts_dir / "final_rewards.json"
-        shutil.copy2(src, dst)
-        copied_files["final_rewards_json"] = str(dst)
-    else:
-        missing_files.append("final_rewards.json")
-
-    particle_image_candidates = sorted(
-        [p for p in run_output_dir.rglob("final_particle_*.png")],
-        key=lambda p: p.name,
-    )
-    if particle_image_candidates:
-        particles_dir.mkdir(parents=True, exist_ok=True)
-        for src in particle_image_candidates:
-            dst = particles_dir / src.name
-            shutil.copy2(src, dst)
-            final_particle_images.append(str(dst))
-    else:
-        missing_files.append("final particle images (final_particle_*.png)")
-
-    return {
-        "run_name": run_name,
-        "prompt": prompt,
-        "run_output_dir": str(run_output_dir),
-        "artifacts_dir": str(run_artifacts_dir),
-        "files": copied_files,
-        "final_particle_images": final_particle_images,
-        "missing": missing_files,
-    }
-
-
-def _mean(values: List[float]) -> float:
-    return sum(values) / len(values)
+        return max(final_rewards_matches, key=lambda p: p.stat().st_mtime)
+    raise FileNotFoundError(f"final_rewards.json not found under {run_output_dir}")
 
 
 def _reward_summary_row(
@@ -184,57 +151,17 @@ def _reward_summary_row(
     prompt: str,
     elapsed: float,
 ) -> Dict[str, Any]:
-    payload = json.loads(final_rewards_path.read_text(encoding="utf-8"))
-    particles = payload.get("particles", [])
-    eval_rewards = [
-        float(particle["eval_reward"])
-        for particle in particles
-        if particle.get("eval_reward") is not None
-    ]
-    steer_rewards = [
-        float(particle["config_reward"])
-        for particle in particles
-        if particle.get("config_reward") is not None
-    ]
-    if not eval_rewards:
-        raise ValueError("final_rewards.json has no particle eval_reward values")
-    if not steer_rewards:
-        raise ValueError("final_rewards.json has no particle config_reward values")
-
-    return {
-        "index": run_index,
-        "run_name": run_name,
-        "prompt": prompt,
-        "num_particles": len(particles),
-        "mean_eval_reward": _mean(eval_rewards),
-        "max_eval_reward": max(eval_rewards),
-        "mean_steer_reward": _mean(steer_rewards),
-        "max_steer_reward": max(steer_rewards),
-        "best_particle_index": payload.get("best_particle_index"),
-        "elapsed_seconds": elapsed,
-        "final_rewards_json": str(final_rewards_path),
-    }
+    return reward_summary_row_from_json(
+        final_rewards_path=final_rewards_path,
+        run_index=run_index,
+        run_name=run_name,
+        prompt=prompt,
+        elapsed=elapsed,
+    )
 
 
 def _write_reward_summary_csv(csv_path: Path, rows: List[Dict[str, Any]]) -> None:
-    fieldnames = [
-        "index",
-        "run_name",
-        "prompt",
-        "num_particles",
-        "mean_eval_reward",
-        "max_eval_reward",
-        "mean_steer_reward",
-        "max_steer_reward",
-        "best_particle_index",
-        "elapsed_seconds",
-        "final_rewards_json",
-    ]
-    csv_path.parent.mkdir(parents=True, exist_ok=True)
-    with csv_path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(rows)
+    write_reward_summary_csv(csv_path, rows)
 
 
 def _print_summary(rows):
@@ -286,7 +213,7 @@ def parse_args():
     parser.add_argument("--batch_p", type=int, default=2)
     parser.add_argument("--kl_coeff", type=float, default=0.0001)
     parser.add_argument("--tempering_gamma", type=float, default=0.008)
-    parser.add_argument("--save-final-artifacts", action="store_true", help="Save and collect final particle images and rewards JSON.")
+    parser.add_argument("--save-final-artifacts", action="store_true", help="Save per-run final particle images, rewards JSON, and reward CSVs.")
     parser.add_argument("--start_index", type=int, default=0, help="Start from this 0-based prompt index.")
     parser.add_argument("--max_prompts", type=int, default=None, help="Limit number of prompts to run.")
     parser.add_argument("--stop_on_error", action="store_true", help="Stop batch on first failed prompt.")
@@ -321,11 +248,8 @@ def main():
     args.output_dir.mkdir(parents=True, exist_ok=True)
     log_dir = args.log_dir or (args.output_dir / "_batch_logs")
     log_dir.mkdir(parents=True, exist_ok=True)
-    artifacts_root = args.output_dir / "_batch_artifacts"
-    if args.save_final_artifacts:
-        artifacts_root.mkdir(parents=True, exist_ok=True)
-    artifacts_manifest_path = artifacts_root / "manifest.jsonl"
-    reward_summary_csv_path = artifacts_root / "reward_summary.csv"
+    reward_summary_csv_path = args.output_dir / "reward_summary.csv"
+    reward_summary_stats_csv_path = args.output_dir / "reward_summary_stats.csv"
 
     _title("SD Batch Runner")
     print(f"Prompt file : {args.prompts_file}")
@@ -333,7 +257,7 @@ def main():
     print(f"Runs        : {len(selected_prompts)} (from index {args.start_index})")
     print(f"Output root : {args.output_dir}")
     print(f"Log dir     : {log_dir}")
-    print(f"Artifacts   : {artifacts_root if args.save_final_artifacts else 'disabled'}")
+    print(f"Final files : {'enabled' if args.save_final_artifacts else 'disabled'}")
     print()
 
     rows = []
@@ -378,35 +302,23 @@ def main():
             })
             print(_c(f"  status: {_c('OK', _Style.GREEN, _Style.BOLD)}  time: {elapsed:.2f}s", _Style.DIM))
             if args.save_final_artifacts:
-                artifact_manifest = _collect_run_artifacts(
-                    run_output_dir=run_output_dir,
-                    run_name=run_name,
-                    prompt=prompt,
-                    artifacts_root=artifacts_root,
-                )
-                with artifacts_manifest_path.open("a", encoding="utf-8") as mf:
-                    mf.write(json.dumps(artifact_manifest) + "\n")
-                if artifact_manifest["missing"]:
-                    print(_c("  artifact warnings:", _Style.YELLOW, _Style.BOLD), "; ".join(artifact_manifest["missing"]))
-                if artifact_manifest["files"].get("final_rewards_json"):
-                    print(_c("  final rewards:", _Style.DIM), artifact_manifest["files"]["final_rewards_json"])
-                    try:
-                        reward_summary_rows.append(
-                            _reward_summary_row(
-                                final_rewards_path=Path(artifact_manifest["files"]["final_rewards_json"]),
-                                run_index=global_idx,
-                                run_name=run_name,
-                                prompt=prompt,
-                                elapsed=elapsed,
-                            )
+                try:
+                    final_rewards_path = _find_final_rewards_path(run_output_dir)
+                    print(_c("  final rewards:", _Style.DIM), final_rewards_path)
+                    reward_summary_rows.append(
+                        _reward_summary_row(
+                            final_rewards_path=final_rewards_path,
+                            run_index=global_idx,
+                            run_name=run_name,
+                            prompt=prompt,
+                            elapsed=elapsed,
                         )
-                    except Exception as exc:
-                        print(_c("  reward summary warning:", _Style.YELLOW, _Style.BOLD), str(exc))
-                if artifact_manifest.get("final_particle_images"):
-                    print(
-                        _c("  final particle images:", _Style.DIM),
-                        f"{len(artifact_manifest['final_particle_images'])} files",
                     )
+                except Exception as exc:
+                    print(_c("  reward summary warning:", _Style.YELLOW, _Style.BOLD), str(exc))
+                final_particle_images = list(run_output_dir.rglob("final_particle_*.png"))
+                if final_particle_images:
+                    print(_c("  final particle images:", _Style.DIM), f"{len(final_particle_images)} files")
         else:
             rows.append({
                 "index": global_idx,
@@ -429,6 +341,7 @@ def main():
     _print_summary(rows)
     if args.save_final_artifacts and reward_summary_rows:
         _write_reward_summary_csv(reward_summary_csv_path, reward_summary_rows)
+        write_reward_summary_stats_csv(reward_summary_stats_csv_path, reward_summary_rows)
     print()
     _title("Result")
     print(f"Succeeded : {success_count}/{len(rows)}")
@@ -436,12 +349,12 @@ def main():
     print(f"Wall time : {total_elapsed:.2f}s")
     print(f"Logs      : {log_dir}")
     if args.save_final_artifacts:
-        print(f"Artifacts : {artifacts_root}")
-        print(f"Manifest  : {artifacts_manifest_path}")
+        print(f"Final files: per-run directories under {args.output_dir}")
         if reward_summary_rows:
             print(f"Rewards CSV: {reward_summary_csv_path}")
+            print(f"Reward stats CSV: {reward_summary_stats_csv_path}")
     else:
-        print("Artifacts : disabled")
+        print("Final files: disabled")
     return 0 if success_count == len(rows) else 1
 
 

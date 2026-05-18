@@ -3,7 +3,13 @@ import json
 import os
 import random
 import re
+import sys
 import time
+from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 
 import das.rewards as rewards
 import numpy as np
@@ -11,6 +17,18 @@ import torch
 from das.diffusers_patch.pipeline_using_SMC import pipeline_using_smc
 from diffusers import DDIMScheduler, DiffusionPipeline
 from PIL import Image
+from runs.reward_eval import (
+    STEERING_REWARD,
+    best_index_for_reward,
+    build_final_rewards_payload,
+    build_particle_record,
+    common_reward_count,
+    evaluate_all_rewards,
+    reward_summary_row_from_values,
+    rewards_to_lists,
+    write_reward_summary_csv,
+    write_reward_summary_stats_csv,
+)
 
 ################### Configuration ###################
 kl_coeff = 0.0001
@@ -44,7 +62,7 @@ def main():
     parser.add_argument("--kl_coeff", type=float, default=kl_coeff)
     parser.add_argument("--tempering_gamma", type=float, default=tempering_gamma)
     parser.add_argument("--seed", type=int, default=None, help="Optional random seed for reproducible sampling.")
-    parser.add_argument("--save-final-artifacts", action="store_true", help="Save final particle images and rewards JSON.")
+    parser.add_argument("--save-final-artifacts", action="store_true", help="Save final particle images, rewards JSON, and reward CSVs.")
     args = parser.parse_args()
 
     run_prompt = args.prompt
@@ -64,18 +82,10 @@ def main():
 
     ################### Rewards ###################
     config_reward_fn = rewards.PickScore(device="cuda")
-    eval_reward_fn = rewards.ImageReward(device="cuda")
 
     def config_image_reward_fn(images):
         prompt_batch = [run_prompt] * int(images.shape[0])
         scores = config_reward_fn(images, prompt_batch)
-        if isinstance(scores, tuple):
-            scores = scores[-1]
-        return torch.as_tensor(scores)
-
-    def eval_image_reward_fn(images):
-        prompt_batch = [run_prompt] * int(images.shape[0])
-        scores = eval_reward_fn(images, prompt_batch)
         if isinstance(scores, tuple):
             scores = scores[-1]
         return torch.as_tensor(scores)
@@ -120,48 +130,50 @@ def main():
         )
     inference_seconds = time.perf_counter() - start
 
-    config_rewards = config_image_reward_fn(final_particle_images).detach().cpu().to(torch.float32)
-    eval_rewards = eval_image_reward_fn(final_particle_images).detach().cpu().to(torch.float32)
+    score_map = evaluate_all_rewards(
+        final_particle_images,
+        run_prompt,
+        device="cuda",
+        prebuilt_reward_fns={STEERING_REWARD: config_reward_fn},
+    )
     log_w_cpu = log_w.detach().cpu().to(torch.float32).flatten()
     normalized_w_cpu = normalized_w.detach().cpu().to(torch.float32).flatten()
-    common_count = min(
-        int(final_particle_images.shape[0]),
-        int(config_rewards.numel()),
-        int(eval_rewards.numel()),
-        int(log_w_cpu.numel()),
-        int(normalized_w_cpu.numel()),
-    )
-    best_particle_index = int(torch.argmax(eval_rewards[:common_count]).item())
+    common_count = common_reward_count(final_particle_images, score_map, log_w_cpu, normalized_w_cpu)
+    if common_count <= 0:
+        raise RuntimeError("No final particles available for reward logging.")
+    reward_values = rewards_to_lists(score_map, common_count)
+    best_particle_index = best_index_for_reward(reward_values)
 
     if args.save_final_artifacts:
-        prompt_dir = os.path.join(args.output_dir, slugify(run_prompt))
-        final_particles_dir = os.path.join(prompt_dir, "final_particles")
-        os.makedirs(final_particles_dir, exist_ok=True)
+        prompt_dir = args.output_dir
+        os.makedirs(prompt_dir, exist_ok=True)
 
         particle_records = []
         for idx in range(common_count):
-            image_path = os.path.join(final_particles_dir, f"final_particle_{idx:03d}.png")
+            image_path = os.path.join(prompt_dir, f"final_particle_{idx:03d}.png")
             tensor_to_pil(final_particle_images[idx]).save(image_path)
             particle_records.append(
-                {
-                    "particle_index": idx,
-                    "image_path": image_path,
-                    "config_reward": float(config_rewards[idx].item()),
-                    "eval_reward": float(eval_rewards[idx].item()),
-                    "log_w": float(log_w_cpu[idx].item()),
-                    "normalized_w": float(normalized_w_cpu[idx].item()),
-                    "is_best_by_eval_reward": idx == best_particle_index,
-                }
+                build_particle_record(
+                    idx,
+                    image_path,
+                    reward_values,
+                    best_particle_index,
+                    extras={
+                        "log_w": float(log_w_cpu[idx].item()),
+                        "normalized_w": float(normalized_w_cpu[idx].item()),
+                    },
+                )
             )
 
         final_rewards_path = os.path.join(prompt_dir, "final_rewards.json")
-        final_rewards_payload = {
-            "prompt": run_prompt,
-            "reward_names": {
-                "config_reward": "PickScore",
-                "eval_reward": "ImageReward",
-            },
-            "smc_config": {
+        final_rewards_payload = build_final_rewards_payload(
+            prompt=run_prompt,
+            reward_values=reward_values,
+            selected_best_index=best_particle_index,
+            particles=particle_records,
+            inference_seconds=inference_seconds,
+            config_key="smc_config",
+            config={
                 "n_steps": run_n_steps,
                 "num_particles": run_num_particles,
                 "batch_p": run_batch_p,
@@ -169,22 +181,29 @@ def main():
                 "tempering_gamma": run_tempering_gamma,
                 "seed": run_seed,
             },
-            "best_particle_index": best_particle_index,
-            "best_particle_config_reward": float(config_rewards[best_particle_index].item()),
-            "best_particle_eval_reward": float(eval_rewards[best_particle_index].item()),
-            "inference_seconds": inference_seconds,
-            "particles": particle_records,
-        }
+        )
         with open(final_rewards_path, "w", encoding="utf-8") as f:
             json.dump(final_rewards_payload, f, indent=2)
-        print(f"Saved final particle images in: {final_particles_dir}")
+        reward_summary_row = reward_summary_row_from_values(
+            prompt=run_prompt,
+            reward_values=reward_values,
+            best_particle_index=best_particle_index,
+            final_rewards_path=Path(final_rewards_path).resolve(),
+            elapsed=inference_seconds,
+        )
+        reward_summary_csv_path = os.path.join(prompt_dir, "reward_summary.csv")
+        reward_summary_stats_csv_path = os.path.join(prompt_dir, "reward_summary_stats.csv")
+        write_reward_summary_csv(Path(reward_summary_csv_path), [reward_summary_row])
+        write_reward_summary_stats_csv(Path(reward_summary_stats_csv_path), [reward_summary_row])
+        print(f"Saved final particle images in: {prompt_dir}")
         print(f"Saved final rewards: {final_rewards_path}")
+        print(f"Saved reward summary CSV: {reward_summary_csv_path}")
+        print(f"Saved reward statistics CSV: {reward_summary_stats_csv_path}")
 
-    print(
-        f"Best particle {best_particle_index}: "
-        f"PickScore={float(config_rewards[best_particle_index].item()):.6f} | "
-        f"ImageReward={float(eval_rewards[best_particle_index].item()):.6f}"
+    best_scores = " | ".join(
+        f"{reward_key}={values[best_particle_index]:.6f}" for reward_key, values in reward_values.items()
     )
+    print(f"Best particle {best_particle_index}: {best_scores}")
 
 
 if __name__ == "__main__":
