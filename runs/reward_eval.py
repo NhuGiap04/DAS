@@ -250,6 +250,32 @@ def reward_summary_row_from_json(
     return row
 
 
+def max_reward_row_from_json(
+    final_rewards_path: Path,
+    run_index: Optional[int] = None,
+    run_name: Optional[str] = None,
+    prompt: Optional[str] = None,
+) -> Dict[str, Any]:
+    payload = json.loads(final_rewards_path.read_text(encoding="utf-8"))
+    reward_values = _reward_values_from_payload(payload)
+    if not reward_values:
+        raise ValueError("final_rewards.json has no particle reward values")
+
+    particles = payload.get("particles", [])
+    row: Dict[str, Any] = {
+        "index": run_index,
+        "run_name": run_name,
+        "prompt": prompt if prompt is not None else payload.get("prompt"),
+        "num_particles": len(particles),
+        "final_rewards_json": str(final_rewards_path),
+    }
+    for reward_key, values in reward_values.items():
+        best_idx = max(range(len(values)), key=lambda idx: values[idx])
+        row[f"max_{reward_key}_reward"] = float(values[best_idx])
+        row[f"best_{reward_key}_particle_index"] = best_idx
+    return row
+
+
 def reward_summary_row_from_values(
     prompt: str,
     reward_values: Mapping[str, Sequence[float]],
@@ -307,6 +333,42 @@ def _ordered_fieldnames(rows: Sequence[Mapping[str, Any]]) -> List[str]:
 def write_reward_summary_csv(csv_path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     fieldnames = _ordered_fieldnames(rows)
+    with csv_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def _ordered_max_reward_fieldnames(rows: Sequence[Mapping[str, Any]]) -> List[str]:
+    base = ["index", "run_name", "prompt", "num_particles"]
+    reward_fields: List[str] = []
+    tail = ["final_rewards_json"]
+    for row in rows:
+        for key in row.keys():
+            if key.startswith("max_") or (key.startswith("best_") and key.endswith("_particle_index")):
+                if key not in reward_fields:
+                    reward_fields.append(key)
+    ordered_reward_fields: List[str] = []
+    for reward_key, _, _ in REWARD_SPECS:
+        for field in (f"max_{reward_key}_reward", f"best_{reward_key}_particle_index"):
+            if field in reward_fields:
+                ordered_reward_fields.append(field)
+    for field in reward_fields:
+        if field not in ordered_reward_fields:
+            ordered_reward_fields.append(field)
+    fieldnames = [field for field in base if any(field in row for row in rows)]
+    fieldnames.extend(ordered_reward_fields)
+    fieldnames.extend(field for field in tail if any(field in row for row in rows))
+    for row in rows:
+        for key in row.keys():
+            if key not in fieldnames:
+                fieldnames.append(key)
+    return fieldnames
+
+
+def write_max_reward_csv(csv_path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fieldnames = _ordered_max_reward_fieldnames(rows)
     with csv_path.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()

@@ -4,6 +4,7 @@ import re
 import shlex
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any, Dict, List
@@ -13,7 +14,9 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from runs.reward_eval import (
+    max_reward_row_from_json,
     reward_summary_row_from_json,
+    write_max_reward_csv,
     write_reward_summary_csv,
     write_reward_summary_stats_csv,
 )
@@ -164,6 +167,71 @@ def _write_reward_summary_csv(csv_path: Path, rows: List[Dict[str, Any]]) -> Non
     write_reward_summary_csv(csv_path, rows)
 
 
+def _run_and_tee(cmd: List[str]) -> subprocess.CompletedProcess:
+    proc = subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        bufsize=1,
+    )
+    stdout_chunks: List[str] = []
+    stderr_chunks: List[str] = []
+
+    def pump(stream, sink, chunks):
+        try:
+            while True:
+                chunk = stream.read(1)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                sink.write(chunk)
+                sink.flush()
+        finally:
+            stream.close()
+
+    threads = [
+        threading.Thread(target=pump, args=(proc.stdout, sys.stdout, stdout_chunks), daemon=True),
+        threading.Thread(target=pump, args=(proc.stderr, sys.stderr, stderr_chunks), daemon=True),
+    ]
+    for thread in threads:
+        thread.start()
+    returncode = proc.wait()
+    for thread in threads:
+        thread.join()
+    return subprocess.CompletedProcess(
+        cmd,
+        returncode,
+        stdout="".join(stdout_chunks),
+        stderr="".join(stderr_chunks),
+    )
+
+
+def _max_reward_row(
+    final_rewards_path: Path,
+    run_index: int,
+    run_name: str,
+    prompt: str,
+) -> Dict[str, Any]:
+    return max_reward_row_from_json(
+        final_rewards_path=final_rewards_path,
+        run_index=run_index,
+        run_name=run_name,
+        prompt=prompt,
+    )
+
+
+def _format_max_rewards(row: Dict[str, Any]) -> str:
+    parts = []
+    for key, value in row.items():
+        if key.startswith("max_") and key.endswith("_reward") and value is not None:
+            reward_key = key[len("max_") : -len("_reward")]
+            best_idx = row.get(f"best_{reward_key}_particle_index")
+            suffix = f"@{best_idx}" if best_idx is not None else ""
+            parts.append(f"{reward_key}={float(value):.6f}{suffix}")
+    return " | ".join(parts)
+
+
 def _print_summary(rows):
     if not rows:
         return
@@ -250,6 +318,7 @@ def main():
     log_dir.mkdir(parents=True, exist_ok=True)
     reward_summary_csv_path = args.output_dir / "reward_summary.csv"
     reward_summary_stats_csv_path = args.output_dir / "reward_summary_stats.csv"
+    max_reward_csv_path = args.output_dir / "max_reward_per_prompt.csv"
 
     _title("SD Batch Runner")
     print(f"Prompt file : {args.prompts_file}")
@@ -262,6 +331,7 @@ def main():
 
     rows = []
     reward_summary_rows = []
+    max_reward_rows = []
     success_count = 0
     batch_start = time.time()
     total_runs = len(selected_prompts)
@@ -285,7 +355,7 @@ def main():
             continue
 
         start = time.time()
-        proc = subprocess.run(cmd, capture_output=True, text=True)
+        proc = _run_and_tee(cmd)
         elapsed = time.time() - start
         stdout_path = log_dir / f"{run_name}.stdout.log"
         stderr_path = log_dir / f"{run_name}.stderr.log"
@@ -314,6 +384,14 @@ def main():
                             elapsed=elapsed,
                         )
                     )
+                    max_reward_row = _max_reward_row(
+                        final_rewards_path=final_rewards_path,
+                        run_index=global_idx,
+                        run_name=run_name,
+                        prompt=prompt,
+                    )
+                    max_reward_rows.append(max_reward_row)
+                    print(_c("  max rewards:", _Style.DIM), _format_max_rewards(max_reward_row))
                 except Exception as exc:
                     print(_c("  reward summary warning:", _Style.YELLOW, _Style.BOLD), str(exc))
                 final_particle_images = list(run_output_dir.rglob("final_particle_*.png"))
@@ -342,6 +420,7 @@ def main():
     if args.save_final_artifacts and reward_summary_rows:
         _write_reward_summary_csv(reward_summary_csv_path, reward_summary_rows)
         write_reward_summary_stats_csv(reward_summary_stats_csv_path, reward_summary_rows)
+        write_max_reward_csv(max_reward_csv_path, max_reward_rows)
     print()
     _title("Result")
     print(f"Succeeded : {success_count}/{len(rows)}")
@@ -353,6 +432,7 @@ def main():
         if reward_summary_rows:
             print(f"Rewards CSV: {reward_summary_csv_path}")
             print(f"Reward stats CSV: {reward_summary_stats_csv_path}")
+            print(f"Max reward CSV: {max_reward_csv_path}")
     else:
         print("Final files: disabled")
     return 0 if success_count == len(rows) else 1
